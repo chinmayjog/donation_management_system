@@ -1,0 +1,86 @@
+{
+    "info": {
+      "name": "Donor Management System API",
+      "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+      {
+        "name": "Authentication",
+        "item": [
+          {
+            "name": "Register User",
+            "request": {
+              "method": "POST",
+              "url": "http://localhost:3000/api/v1/auth/register",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"username\": \"testuser\",\n  \"email\": \"test@example.com\",\n  \"password\": \"securePassword123\",\n  \"firstName\": \"Test\",\n  \"lastName\": \"User\",\n  \"phone\": \"+919876543210\"\n}"
+              }
+            }
+          },
+          {
+            "name": "Login",
+            "request": {
+              "method": "POST",
+              "url": "http://localhost:3000/api/v1/auth/login",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"securePassword123\"\n}"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Donors",
+        "item": [
+          {
+            "name": "Create Donor",
+            "request": {
+              "method": "POST",
+              "url": "http://localhost:3000/api/v1/donors",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{token}}"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Smith\",\n  \"email\": \"jane.smith@example.com\",\n  \"phone\": \"+919876543211\",\n  \"address\": \"456 Park Avenue\",\n  \"city\": \"Mumbai\",\n  \"state\": \"Maharashtra\",\n  \"postalCode\": \"400001\",\n  \"preferredCommunication\": \"whatsapp\"\n}"
+              }
+            }
+          },
+          {
+            "name": "Get Donors",
+            "request": {
+              "method": "GET",
+              "url": "http://localhost:3000/api/v1/donors",
+              "header": [
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{token}}"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }

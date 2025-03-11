@@ -1,0 +1,165 @@
+version: '3.3'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: donor-management-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=rootpassword
+    networks:
+      - donor-management-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: donor-management-rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    networks:
+      - donor-management-network
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: donor-management-api-gateway
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - AUTH_SERVICE_URL=http://auth-service:3001
+      - DONOR_SERVICE_URL=http://donor-service:3002
+      - DONATION_SERVICE_URL=http://donation-service:3003
+      - RECEIPT_SERVICE_URL=http://receipt-service:3004
+      - EVENT_SERVICE_URL=http://event-service:3005
+      - QR_SERVICE_URL=http://qr-service:3006
+      - ADMIN_SERVICE_URL=http://admin-service:3007
+      - JWT_SECRET=your_jwt_secret_key
+    depends_on:
+      - auth-service
+      - donor-service
+      - donation-service
+      - receipt-service
+      - event-service
+      - qr-service
+      - admin-service
+    networks:
+      - donor-management-network
+
+  auth-service:
+    build: ./auth-service
+    container_name: donor-management-auth-service
+    restart: always
+    environment:
+      - PORT=3001
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/auth-service?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key
+      - JWT_REFRESH_SECRET=your_jwt_refresh_secret_key
+    depends_on:
+      - mongodb
+    networks:
+      - donor-management-network
+
+  donor-service:
+    build: ./donor-service
+    container_name: donor-management-donor-service
+    restart: always
+    environment:
+      - PORT=3002
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/donor-service?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - donor-management-network
+
+  donation-service:
+    build: ./donation-service
+    container_name: donor-management-donation-service
+    restart: always
+    environment:
+      - PORT=3003
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/donation-service?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - donor-management-network
+
+  receipt-service:
+    build: ./receipt-service
+    container_name: donor-management-receipt-service
+    restart: always
+    environment:
+      - PORT=3004
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/receipt-service?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - donor-management-network
+
+  event-service:
+    build: ./event-service
+    container_name: donor-management-event-service
+    restart: always
+    environment:
+      - PORT=3005
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/event-service?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - donor-management-network
+
+  qr-service:
+    build: ./qr-service
+    container_name: donor-management-qr-service
+    restart: always
+    environment:
+      - PORT=3006
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/qr-service?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - donor-management-network
+
+  admin-service:
+    build: ./admin-service
+    container_name: donor-management-admin-service
+    restart: always
+    environment:
+      - PORT=3007
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/admin-service?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - donor-management-network
+
+  notification-service:
+    build: ./notification-service
+    container_name: donor-management-notification-service
+    restart: always
+    environment:
+      - PORT=3008
+      - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/notification-service?authSource=admin
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - EMAIL_SENDER_NAME=Donor Management System
+      - EMAIL_SENDER_EMAIL=noreply@donormanagementsystem.com
+    depends_on:
+      - mongodb
+      - rabbitmq
+    networks:
+      - donor-management-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  donor-management-network:
+    driver: bridge
