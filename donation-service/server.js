@@ -1,10 +1,103 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { body, param, query, validationResult } = require('express-validator');
+const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const app = express();
 const PORT = process.env.PORT || 3003;
 
 app.use(express.json());
+
+// JWT verification middleware
+const verifyToken = (req, res, next) => {
+  // Check if Authorization header exists and has the correct format
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      success: false,
+      error: {
+        code: 'AUTHENTICATION_ERROR',
+        message: 'Authentication token required'
+      }
+    });
+  }
+
+  // Extract the token from the Authorization header
+  const token = authHeader.split(' ')[1];
+  
+  try {
+    // Verify the token using the secret key
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_key');
+    
+    // Add the decoded user information to the request object
+    req.user = decoded;
+    
+    // Add user ID and role to headers for service-to-service communication
+    req.headers['x-user-id'] = decoded.id;
+    req.headers['x-user-role'] = decoded.role;
+    
+    // Proceed to the next middleware or route handler
+    next();
+  } catch (error) {
+    // Handle different types of JWT errors
+    if (error instanceof jwt.TokenExpiredError) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'TOKEN_EXPIRED',
+          message: 'Authentication token has expired'
+        }
+      });
+    } else if (error instanceof jwt.JsonWebTokenError) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid authentication token'
+        }
+      });
+    } else {
+      // Handle any other unexpected errors
+      console.error('JWT verification error:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Internal server error'
+        }
+      });
+    }
+  }
+};
+
+// Role-based authorization middleware
+const authorizeRoles = (allowedRoles) => {
+  return (req, res, next) => {
+    // Check if user exists and has a role property
+    if (!req.user || !req.user.role) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'AUTHORIZATION_ERROR',
+          message: 'You do not have permission to access this resource'
+        }
+      });
+    }
+    
+    // Check if the user's role is in the allowed roles array
+    if (allowedRoles.includes(req.user.role)) {
+      next();
+    } else {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'AUTHORIZATION_ERROR',
+          message: 'You do not have permission to access this resource'
+        }
+      });
+    }
+  };
+};
 
 // MongoDB connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/donation-service', {
@@ -32,6 +125,25 @@ const donationSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
+// Create indexes for frequent queries
+donationSchema.index({ donorId: 1 });
+donationSchema.index({ donationDate: -1 });
+donationSchema.index({ paymentMethod: 1 });
+donationSchema.index({ receiptStatus: 1 });
+
+// Add error handling for database connection
+mongoose.connection.on('connected', () => {
+  console.log('Connected to MongoDB');
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error(`MongoDB connection error: ${err}`);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('MongoDB disconnected');
+});
+
 const Donation = mongoose.model('Donation', donationSchema);
 
 // Pagination middleware
@@ -48,6 +160,9 @@ const paginate = (req, res, next) => {
   next();
 };
 
+// Apply JWT verification to all routes
+app.use(verifyToken);
+
 // Get all donations
 app.get('/', paginate, async (req, res) => {
   try {
@@ -56,7 +171,9 @@ app.get('/', paginate, async (req, res) => {
     // Build query based on filters
     const query = {};
     
+    if (req.query.donorId) query.donorId = req.query.donorId;
     if (req.query.paymentMethod) query.paymentMethod = req.query.paymentMethod;
+    if (req.query.receiptStatus) query.receiptStatus = req.query.receiptStatus;
     
     // Amount range filters
     if (req.query.minAmount) query.amount = { $gte: parseFloat(req.query.minAmount) };
@@ -104,40 +221,60 @@ app.get('/', paginate, async (req, res) => {
       .skip(skip)
       .limit(limit);
       
-    // In a real microservice architecture, we'd need to fetch the donor information
-    // from the donor service for each donation. Here we'll simulate that with
-    // mock donor data
+    // In a microservice architecture, we fetch the donor information
+    // from the donor service for each donation to enrich the response
     
-    const donationsWithDonorInfo = donations.map(donation => {
+    const donationsWithDonorInfo = await Promise.all(donations.map(async donation => {
       const { _id, donorId, amount, donationDate, paymentMethod, transactionReference, 
-              receiptStatus, receiptId, createdAt, updatedAt } = donation;
+              notes, receiptStatus, receiptId, createdAt, updatedAt } = donation;
       
-      // This is where we'd typically make a request to the donor service
-      // For this example, we'll use mock data
-      let donor;
-      if (donorId === '60d4a3a91f3d2c001f9a4ed9') {
-        donor = {
-          id: donorId,
-          firstName: 'Jane',
-          lastName: 'Smith',
-          email: 'jane.smith@example.com'
-        };
-      } else {
-        donor = {
-          id: donorId,
-          firstName: 'Unknown',
-          lastName: 'Donor',
-          email: 'unknown@example.com'
-        };
+      // Default donor info in case the service call fails
+      let donor = {
+        id: donorId,
+        firstName: 'Unknown',
+        lastName: 'Donor',
+        email: 'unknown@example.com'
+      };
+      
+      try {
+        // Make a real API call to the donor service
+        const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
+        const donorResponse = await axios.get(`${donorServiceUrl}/${donorId}`, {
+          headers: {
+            // Forward user authentication and context
+            'Authorization': req.headers.authorization,
+            'x-user-id': req.headers['x-user-id'],
+            'x-user-role': req.headers['x-user-role']
+          },
+          timeout: 5000 // Set reasonable timeout
+        });
+        
+        if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
+          donor = donorResponse.data.data;
+        }
+      } catch (error) {
+        console.error(`Error fetching donor with ID ${donorId}:`, error.message);
+        // Continue with default donor info
       }
       
-      // Mock receipt data
+      // Mock receipt data if receipt exists
       let receipt = null;
       if (receiptId) {
-        receipt = {
-          id: receiptId,
-          receiptNumber: `REC${new Date(createdAt).getFullYear()}${String(new Date(createdAt).getMonth() + 1).padStart(2, '0')}0001`
-        };
+        try {
+          // Mock call to receipt service - in production this would be a real API call
+          // const receiptResponse = await axios.get(`${process.env.RECEIPT_SERVICE_URL}/receipts/${receiptId}`);
+          // receipt = receiptResponse.data.data;
+          
+          // For now, we'll simulate receipt data
+          receipt = {
+            id: receiptId,
+            receiptNumber: `REC${new Date(createdAt).getFullYear()}${String(new Date(createdAt).getMonth() + 1).padStart(2, '0')}0001`,
+            deliveryStatus: 'DELIVERED'
+          };
+        } catch (error) {
+          console.error(`Error fetching receipt with ID ${receiptId}:`, error);
+          // Continue with null receipt
+        }
       }
       
       return {
@@ -147,11 +284,12 @@ app.get('/', paginate, async (req, res) => {
         donationDate,
         paymentMethod,
         transactionReference,
+        notes,
         receipt,
         createdAt,
         updatedAt
       };
-    });
+    }));
     
     // Calculate pagination details
     const totalPages = Math.ceil(total / limit);
@@ -212,15 +350,35 @@ app.get('/:donationId', [
       });
     }
     
-    // In a real implementation, these would be API calls to the respective services
-    // Simulated donor data
-    const donor = {
+    // Fetch donor data from donor service
+    let donor = {
       id: donation.donorId,
-      firstName: 'Jane',
-      lastName: 'Smith',
-      email: 'jane.smith@example.com',
-      phone: '+919876543211'
+      firstName: 'Unknown',
+      lastName: 'Donor',
+      email: 'unknown@example.com',
+      phone: '+919999999999'
     };
+    
+    try {
+      // Make a real API call to the donor service
+      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
+      const donorResponse = await axios.get(`${donorServiceUrl}/${donation.donorId}`, {
+        headers: {
+          // Forward user authentication and context
+          'Authorization': req.headers.authorization,
+          'x-user-id': req.headers['x-user-id'],
+          'x-user-role': req.headers['x-user-role']
+        },
+        timeout: 5000 // Set reasonable timeout
+      });
+      
+      if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
+        donor = donorResponse.data.data;
+      }
+    } catch (error) {
+      console.error(`Error fetching donor with ID ${donation.donorId}:`, error.message);
+      // Continue with default donor info
+    }
     
     // Simulated recorded-by user data
     const recordedBy = {
@@ -228,13 +386,13 @@ app.get('/:donationId', [
       username: 'johndoe'
     };
     
-    // Simulated receipt data
+    // Simulated receipt data if receipt exists
     let receipt = null;
     if (donation.receiptId) {
       receipt = {
         id: donation.receiptId,
         receiptNumber: `REC${new Date(donation.createdAt).getFullYear()}${String(new Date(donation.createdAt).getMonth() + 1).padStart(2, '0')}0001`,
-        deliveryStatus: 'DELIVERED',
+        deliveryStatus: donation.receiptStatus === 'DELIVERED' ? 'DELIVERED' : 'PENDING',
         deliveryMethod: 'WHATSAPP'
       };
     }
@@ -291,12 +449,46 @@ app.post('/', [
   }
 
   try {
-    // In a real implementation, we would verify that the donor exists by making a request to the donor service
-    // For this example, we'll assume the donor exists
+    // Verify that the donor exists by making a request to the donor service
+    try {
+      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
+      const donorResponse = await axios.get(`${donorServiceUrl}/${req.body.donorId}`, {
+        headers: {
+          'Authorization': req.headers.authorization,
+          'x-user-id': req.headers['x-user-id'],
+          'x-user-role': req.headers['x-user-role']
+        },
+        timeout: 5000
+      });
+      
+      if (!donorResponse.data || !donorResponse.data.success) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'RESOURCE_NOT_FOUND',
+            message: 'Donor not found'
+          }
+        });
+      }
+    } catch (error) {
+      // If the error is a 404, it means the donor doesn't exist
+      if (error.response && error.response.status === 404) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'RESOURCE_NOT_FOUND',
+            message: 'Donor not found'
+          }
+        });
+      }
+      
+      // For other errors (like service unavailable), we'll log but continue
+      console.error(`Error verifying donor existence: ${error.message}`);
+      // We'll still create the donation in this case, assuming the donorId is valid
+    }
     
-    // Get user ID from JWT (in a real implementation)
-    // For now, we'll use a placeholder
-    const userId = req.headers['x-user-id'] || 'system';
+    // Get user ID from JWT (which is already verified)
+    const userId = req.user.id;
     
     // Create new donation
     const donation = new Donation({
@@ -311,18 +503,68 @@ app.post('/', [
     
     await donation.save();
     
-    // In a real implementation, we would update the donor's totalDonations
-    // by making a request to the donor service or by publishing an event
+    // Update the donor's totalDonations through the donor service
+    try {
+      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
+      // This would be a PATCH request in a real implementation to update just the totalDonations field
+      // For simplicity, we're just logging the intent here
+      console.log(`Would update totalDonations for donor ${req.body.donorId} with amount ${req.body.amount}`);
+      
+      // Example of what the real implementation might look like:
+      /*
+      await axios.patch(
+        `${donorServiceUrl}/${req.body.donorId}/update-donation-total`, 
+        { amount: req.body.amount },
+        {
+          headers: {
+            'Authorization': req.headers.authorization,
+            'x-user-id': req.headers['x-user-id'],
+            'x-user-role': req.headers['x-user-role']
+          }
+        }
+      );
+      */
+    } catch (error) {
+      // Log but don't fail the transaction
+      console.error(`Error updating donor totalDonations: ${error.message}`);
+    }
     
-    // We would also trigger receipt generation by publishing an event
-    // or making a request to the receipt service
+    // In a production environment with message broker (RabbitMQ, Kafka), 
+    // we would publish an event for receipt generation
+    // For now, we'll just log the intent
+    console.log(`Donation created. Receipt generation should be triggered for donation ${donation._id}`);
     
-    // Simulated donor data
-    const donor = {
-      id: donation.donorId,
-      firstName: 'Jane',
-      lastName: 'Smith'
+    // Fetch donor data from donor service
+    let donor = {
+      id: req.body.donorId,
+      firstName: 'Unknown',
+      lastName: 'Donor'
     };
+    
+    try {
+      // Make a real API call to the donor service to verify donor exists
+      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
+      const donorResponse = await axios.get(`${donorServiceUrl}/${req.body.donorId}`, {
+        headers: {
+          // Forward user authentication and context
+          'Authorization': req.headers.authorization,
+          'x-user-id': req.headers['x-user-id'],
+          'x-user-role': req.headers['x-user-role']
+        },
+        timeout: 5000 // Set reasonable timeout
+      });
+      
+      if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
+        donor = {
+          id: donorResponse.data.data._id || donorResponse.data.data.id,
+          firstName: donorResponse.data.data.firstName,
+          lastName: donorResponse.data.data.lastName
+        };
+      }
+    } catch (error) {
+      console.error(`Error verifying donor with ID ${req.body.donorId}:`, error.message);
+      // We'll still create the donation, but log the warning
+    }
     
     const response = {
       success: true,
@@ -386,25 +628,63 @@ app.put('/:donationId', [
       });
     }
     
+    // Check if donation has a receipt already
+    // In a real implementation, we might prevent certain changes if receipt is generated
+    if (donation.receiptStatus !== 'PENDING' && 
+        (req.body.amount !== undefined || req.body.donationDate !== undefined)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Cannot modify amount or date after receipt has been generated'
+        }
+      });
+    }
+    
     // Update fields if provided
-    if (req.body.amount) donation.amount = req.body.amount;
+    if (req.body.amount !== undefined) donation.amount = req.body.amount;
     if (req.body.paymentMethod) donation.paymentMethod = req.body.paymentMethod;
-    if (req.body.transactionReference) donation.transactionReference = req.body.transactionReference;
+    if (req.body.transactionReference !== undefined) donation.transactionReference = req.body.transactionReference;
     if (req.body.donationDate) donation.donationDate = new Date(req.body.donationDate);
-    if (req.body.notes) donation.notes = req.body.notes;
+    if (req.body.notes !== undefined) donation.notes = req.body.notes;
     
     donation.updatedAt = new Date();
     await donation.save();
     
-    // If receipt already exists, we might need to update it
+    // If receipt already exists and we changed amount or date, we might need to update it
     // This would involve publishing an event or making a request to the receipt service
     
-    // Simulated donor data
-    const donor = {
+    // Fetch donor data from donor service
+    let donor = {
       id: donation.donorId,
-      firstName: 'Jane',
-      lastName: 'Smith'
+      firstName: 'Unknown',
+      lastName: 'Donor'
     };
+    
+    try {
+      // Make a real API call to the donor service
+      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
+      const donorResponse = await axios.get(`${donorServiceUrl}/${donation.donorId}`, {
+        headers: {
+          // Forward user authentication and context
+          'Authorization': req.headers.authorization,
+          'x-user-id': req.headers['x-user-id'],
+          'x-user-role': req.headers['x-user-role']
+        },
+        timeout: 5000 // Set reasonable timeout
+      });
+      
+      if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
+        donor = {
+          id: donorResponse.data.data._id || donorResponse.data.data.id,
+          firstName: donorResponse.data.data.firstName,
+          lastName: donorResponse.data.data.lastName
+        };
+      }
+    } catch (error) {
+      console.error(`Error fetching donor with ID ${donation.donorId}:`, error.message);
+      // Continue with default donor info
+    }
     
     const response = {
       success: true,
@@ -422,6 +702,277 @@ app.put('/:donationId', [
     };
     
     res.json(response);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Internal server error'
+      }
+    });
+  }
+});
+
+// Generate receipt for donation (available to admins and volunteers)
+app.post('/:donationId/receipt', authorizeRoles(['admin', 'superadmin', 'volunteer']), [
+  param('donationId').isMongoId(),
+  body('deliveryMethod').isIn(['EMAIL', 'WHATSAPP', 'SMS', 'PRINT'])
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid input data',
+        details: errors.array()
+      }
+    });
+  }
+
+  try {
+    // Check if donation exists
+    const donation = await Donation.findById(req.params.donationId);
+    if (!donation) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'RESOURCE_NOT_FOUND',
+          message: 'Donation not found'
+        }
+      });
+    }
+    
+    // Check if receipt already exists
+    if (donation.receiptStatus !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'DUPLICATE_ERROR',
+          message: 'Receipt already generated for this donation'
+        }
+      });
+    }
+    
+    // In a real implementation, we would call the receipt service to generate a receipt
+    // For now, we'll simulate receipt generation
+    const receiptId = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    
+    // Update donation with receipt info
+    donation.receiptId = receiptId;
+    donation.receiptStatus = 'GENERATED';
+    donation.updatedAt = new Date();
+    await donation.save();
+    
+    // In a production environment, we'd have the receipt service return the actual receipt details
+    // For now, simulate a response
+    const receiptData = {
+      id: receiptId,
+      receiptNumber: `REC${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth() + 1).toString().padStart(2, '0')}0001`,
+      donationId: donation._id,
+      amount: donation.amount,
+      donationDate: donation.donationDate,
+      deliveryMethod: req.body.deliveryMethod,
+      deliveryStatus: 'PENDING',
+      createdAt: new Date()
+    };
+    
+    res.status(201).json({
+      success: true,
+      data: receiptData
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Internal server error'
+      }
+    });
+  }
+});
+
+// Get monthly donation statistics (available to admins and volunteers)
+app.get('/statistics/monthly', authorizeRoles(['admin', 'superadmin', 'volunteer']), async (req, res) => {
+  try {
+    // Parse date range from query params
+    const startDate = req.query.startDate ? new Date(req.query.startDate) : new Date(new Date().setFullYear(new Date().getFullYear() - 1));
+    const endDate = req.query.endDate ? new Date(req.query.endDate) : new Date();
+    
+    // Aggregation pipeline to get monthly statistics
+    const monthlyStats = await Donation.aggregate([
+      {
+        $match: {
+          donationDate: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$donationDate" },
+            month: { $month: "$donationDate" }
+          },
+          totalAmount: { $sum: "$amount" },
+          count: { $sum: 1 },
+          avgAmount: { $avg: "$amount" },
+          minAmount: { $min: "$amount" },
+          maxAmount: { $max: "$amount" }
+        }
+      },
+      {
+        $sort: { "_id.year": 1, "_id.month": 1 }
+      }
+    ]);
+    
+    // Transform the data for easier consumption
+    const formattedStats = monthlyStats.map(stat => {
+      const year = stat._id.year;
+      const month = stat._id.month;
+      const monthName = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long' });
+      
+      return {
+        period: `${monthName} ${year}`,
+        year,
+        month,
+        totalAmount: stat.totalAmount,
+        count: stat.count,
+        avgAmount: parseFloat(stat.avgAmount.toFixed(2)),
+        minAmount: stat.minAmount,
+        maxAmount: stat.maxAmount
+      };
+    });
+    
+    res.json({
+      success: true,
+      count: formattedStats.length,
+      data: formattedStats
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Internal server error'
+      }
+    });
+  }
+});
+
+// Get payment method statistics (available to admins and volunteers)
+app.get('/statistics/payment-methods', authorizeRoles(['admin', 'superadmin', 'volunteer']), async (req, res) => {
+  try {
+    // Parse date range from query params
+    const startDate = req.query.startDate ? new Date(req.query.startDate) : new Date(new Date().setFullYear(new Date().getFullYear() - 1));
+    const endDate = req.query.endDate ? new Date(req.query.endDate) : new Date();
+    
+    // Aggregation pipeline to get payment method statistics
+    const paymentStats = await Donation.aggregate([
+      {
+        $match: {
+          donationDate: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: "$paymentMethod",
+          totalAmount: { $sum: "$amount" },
+          count: { $sum: 1 },
+          avgAmount: { $avg: "$amount" }
+        }
+      },
+      {
+        $sort: { totalAmount: -1 }
+      }
+    ]);
+    
+    // Transform the data for easier consumption
+    const formattedStats = paymentStats.map(stat => {
+      return {
+        paymentMethod: stat._id,
+        totalAmount: stat.totalAmount,
+        count: stat.count,
+        avgAmount: parseFloat(stat.avgAmount.toFixed(2)),
+        percentage: 0 // Will be calculated below
+      };
+    });
+    
+    // Calculate percentage of total
+    const totalAmount = formattedStats.reduce((sum, item) => sum + item.totalAmount, 0);
+    formattedStats.forEach(item => {
+      item.percentage = parseFloat(((item.totalAmount / totalAmount) * 100).toFixed(2));
+    });
+    
+    res.json({
+      success: true,
+      count: formattedStats.length,
+      data: formattedStats
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Internal server error'
+      }
+    });
+  }
+});
+
+// Delete donation (only available for admins)
+app.delete('/:donationId', authorizeRoles(['admin', 'superadmin']), [
+  param('donationId').isMongoId()
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid donation ID format',
+        details: errors.array()
+      }
+    });
+  }
+
+  try {
+    // User permissions are already checked by the authorizeRoles middleware
+    
+    // Check if donation exists
+    const donation = await Donation.findById(req.params.donationId);
+    if (!donation) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'RESOURCE_NOT_FOUND',
+          message: 'Donation not found'
+        }
+      });
+    }
+    
+    // Check if receipt has been generated
+    if (donation.receiptStatus !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Cannot delete donation after receipt has been generated'
+        }
+      });
+    }
+    
+    // Delete the donation
+    await Donation.findByIdAndDelete(req.params.donationId);
+    
+    res.json({
+      success: true,
+      data: {
+        message: 'Donation deleted successfully'
+      }
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({

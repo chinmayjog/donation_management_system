@@ -48,7 +48,7 @@ export const deleteEvent = async (id) => {
 export const getEventAttendees = async (id) => {
   try {
     const response = await api.get(`/events/${id}/attendees`);
-    return response.data.data;
+    return response.data;
   } catch (error) {
     throw error.response ? error.response.data : error;
   }

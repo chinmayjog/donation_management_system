@@ -5,6 +5,7 @@ import Layout from './layout/Layout';
 import { getAllDonors } from '../services/donorService';
 import { getAllDonations } from '../services/donationService';
 import { getAllEvents } from '../services/eventService';
+import { DonationStats } from './donations';
 
 const Dashboard = () => {
   const [stats, setStats] = useState({
@@ -91,6 +92,12 @@ const Dashboard = () => {
                 <h3>{stats.upcomingEvents}</h3>
               </Card.Body>
             </Card>
+          </Col>
+        </Row>
+
+        <Row className="mt-4">
+          <Col md={12}>
+            <DonationStats />
           </Col>
         </Row>
 

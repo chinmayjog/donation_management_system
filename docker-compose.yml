@@ -76,6 +76,7 @@ services:
     environment:
       - PORT=3002
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/donor-service?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key
     depends_on:
       - mongodb
     networks:
@@ -88,8 +89,13 @@ services:
     environment:
       - PORT=3003
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/donation-service?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key
+      - DONOR_SERVICE_URL=http://donor-service:3002
+      - RECEIPT_SERVICE_URL=http://receipt-service:3004
+      - LOG_LEVEL=info
     depends_on:
       - mongodb
+      - donor-service
     networks:
       - donor-management-network
 
@@ -100,6 +106,7 @@ services:
     environment:
       - PORT=3004
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/receipt-service?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key
     depends_on:
       - mongodb
     networks:
@@ -112,6 +119,7 @@ services:
     environment:
       - PORT=3005
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/event-service?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key
     depends_on:
       - mongodb
     networks:
@@ -124,6 +132,7 @@ services:
     environment:
       - PORT=3006
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/qr-service?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key
     depends_on:
       - mongodb
     networks:
@@ -136,6 +145,7 @@ services:
     environment:
       - PORT=3007
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/admin-service?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key
     depends_on:
       - mongodb
     networks:
@@ -151,6 +161,7 @@ services:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
       - EMAIL_SENDER_NAME=Donor Management System
       - EMAIL_SENDER_EMAIL=noreply@donormanagementsystem.com
+      - JWT_SECRET=your_jwt_secret_key
     depends_on:
       - mongodb
       - rabbitmq
