@@ -767,6 +767,74 @@ app.get('/:donorId/events', [
   }
 });
 
+// Add this endpoint to donor-service/server.js after the other routes
+
+// Get multiple donors by batch
+app.get('/batch', async (req, res) => {
+  try {
+    // Extract donor IDs from query parameter
+    const donorIds = req.query.ids ? req.query.ids.split(',') : [];
+    
+    if (!donorIds.length) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'No donor IDs provided',
+          details: [{ param: 'ids', message: 'At least one donor ID is required' }]
+        }
+      });
+    }
+    
+    // Check if all IDs are valid MongoDB ObjectIDs
+    const invalidIds = donorIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidIds.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid donor ID format',
+          details: invalidIds.map(id => ({ param: 'ids', value: id, message: 'Invalid MongoDB ObjectID format' }))
+        }
+      });
+    }
+    
+    // Convert string IDs to ObjectIDs for the query
+    const objectIds = donorIds.map(id => mongoose.Types.ObjectId(id));
+    
+    // Fetch donors
+    const donors = await Donor.find({ _id: { $in: objectIds } });
+    
+    // Create a Map for O(1) lookups
+    const donorMap = new Map();
+    donors.forEach(donor => donorMap.set(donor._id.toString(), donor));
+    
+    // Maintain the order of the requested IDs and handle missing donors
+    const orderedDonors = donorIds.map(id => {
+      const donor = donorMap.get(id);
+      if (donor) {
+        return donor;
+      }
+      return null;
+    }).filter(Boolean); // Remove nulls for donors that weren't found
+    
+    res.json({
+      success: true,
+      count: orderedDonors.length,
+      data: orderedDonors
+    });
+  } catch (error) {
+    console.error('Error in batch donors endpoint:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Internal server error'
+      }
+    });
+  }
+});
+
 // Initialize RabbitMQ connection when server starts
 connectToRabbitMQ();
 

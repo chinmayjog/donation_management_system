@@ -161,6 +161,7 @@ const paginate = (req, res, next) => {
 };
 
 // Enhanced donor service client
+// Enhanced donor service client
 const DonorServiceClient = {
   baseUrl: process.env.DONOR_SERVICE_URL || 'http://donor-service:3002',
   timeout: 5000,
@@ -231,22 +232,75 @@ const DonorServiceClient = {
     
     // Deduplicate donor IDs
     const uniqueDonorIds = [...new Set(donorIds)];
+    console.log(`Batch fetching ${uniqueDonorIds.length} donors from donor service`);
     
-    // Create a map to store results
-    const donorMap = {};
+    // Forward necessary authentication headers
+    const requestHeaders = {
+      'Authorization': headers.authorization,
+      'x-user-id': headers['x-user-id'],
+      'x-user-role': headers['x-user-role'],
+      'x-request-id': headers['x-request-id'] || `req_${Date.now()}`
+    };
     
-    // Process donor IDs in parallel with Promise.all
-    const promises = uniqueDonorIds.map(id => 
-      this.getDonor(id, headers)
-        .then(donor => {
-          donorMap[id] = donor;
-        })
-    );
-    
-    // Wait for all requests to complete
-    await Promise.all(promises);
-    
-    return donorMap;
+    try {
+      // Make a batch request to donor service instead of individual requests
+      // Many APIs support comma-separated IDs or batch endpoints
+      const queryParams = new URLSearchParams();
+      queryParams.append('ids', uniqueDonorIds.join(','));
+      
+      const response = await axios.get(`${this.baseUrl}/batch`, {
+        headers: requestHeaders,
+        params: queryParams,
+        timeout: this.timeout
+      });
+      
+      if (response.data && response.data.success && response.data.data) {
+        // Convert the response array to a map of id -> donor
+        const donorMap = {};
+        response.data.data.forEach(donor => {
+          donorMap[donor.id] = donor;
+        });
+        console.log(`Successfully fetched ${Object.keys(donorMap).length} donors`);
+        return donorMap;
+      }
+      
+      throw new Error('Invalid donor service batch response format');
+    } catch (error) {
+      console.error('Error batch fetching donors:', error.message);
+      
+      // Fall back to individual requests if batch request fails
+      // This adds resilience in case the batch endpoint is down
+      console.log('Falling back to individual donor requests');
+      
+      // Create a map to store results
+      const donorMap = {};
+      
+      // Use Promise.allSettled to handle individual failures gracefully
+      const promises = uniqueDonorIds.map(id => 
+        this.getDonor(id, headers)
+          .then(donor => {
+            donorMap[id] = donor;
+          })
+          .catch(err => {
+            console.error(`Error fetching donor ${id}:`, err.message);
+            // Add default donor data for failed requests
+            donorMap[id] = {
+              id: id,
+              firstName: 'Unknown',
+              lastName: 'Donor',
+              email: 'unknown@example.com',
+              phone: '+919999999999',
+              _defaultData: true
+            };
+          })
+      );
+      
+      // Wait for all requests to complete
+      await Promise.allSettled(promises);
+      
+      console.log(`Fetched ${Object.keys(donorMap).length} donors via fallback method`);
+      return donorMap;
+    }
   }
 };
 
