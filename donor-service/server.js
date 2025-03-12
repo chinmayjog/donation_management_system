@@ -391,7 +391,7 @@ app.post('/:donorId/verify-pan', [
 });
 
 // Get donor donations
-// This would typically call the donation service
+// Get donor donations from the donation service
 app.get('/:donorId/donations', [
   param('donorId').isMongoId()
 ], async (req, res) => {
@@ -420,36 +420,92 @@ app.get('/:donorId/donations', [
       });
     }
     
-    // In a real implementation, this would call the donation service
-    // For this example, we'll return mock data
-    res.json({
-      success: true,
-      count: 2,
-      data: [
-        {
-          id: '60d4a4801f3d2c001f9a4edc',
-          amount: 5000.00,
-          donationDate: '2023-06-24T14:42:24.789Z',
-          paymentMethod: 'BANK_TRANSFER',
-          transactionReference: 'TXN123456',
-          notes: 'Annual donation',
-          createdAt: '2023-06-24T14:42:24.789Z',
-          updatedAt: '2023-06-24T14:42:24.789Z'
-        },
-        {
-          id: '60d4a4a51f3d2c001f9a4edd',
-          amount: 2500.00,
-          donationDate: '2023-06-25T10:10:24.789Z',
-          paymentMethod: 'UPI',
-          transactionReference: 'UPI789012',
-          notes: 'Special event contribution',
-          createdAt: '2023-06-25T10:10:24.789Z',
-          updatedAt: '2023-06-25T10:10:24.789Z'
+    // Define donation service URL - from environment variable or default
+    const donationServiceUrl = process.env.DONATION_SERVICE_URL || 'http://donation-service:3003';
+    
+    try {
+      // Forward necessary headers for authentication
+      const headers = {
+        'Authorization': req.headers.authorization,
+        'x-user-id': req.headers['x-user-id'],
+        'x-user-role': req.headers['x-user-role']
+      };
+      
+      // Call donation service to get donations for this donor
+      const response = await axios.get(`${donationServiceUrl}/donor/${req.params.donorId}`, {
+        headers,
+        timeout: 5000 // 5 second timeout
+      });
+      
+      // Check if response is valid
+      if (response.data && response.data.success) {
+        return res.json(response.data);
+      } else {
+        throw new Error('Invalid response format from donation service');
+      }
+    } catch (error) {
+      // Enhanced error handling with fallback
+      if (error.response) {
+        // The donation service responded with an error
+        console.error(`Error from donation service: ${error.response.status}`, error.response.data);
+        
+        if (error.response.status === 404) {
+          // No donations found - this is not an error, just return empty array
+          return res.json({
+            success: true,
+            count: 0,
+            data: []
+          });
         }
-      ]
-    });
+        
+        // Forward the error from the donation service
+        return res.status(error.response.status).json(error.response.data);
+      } else if (error.request) {
+        // No response received - service might be down
+        console.error(`Donation service timeout or no response: ${error.message}`);
+        
+        // Log the incident for monitoring
+        console.error({
+          type: 'SERVICE_UNAVAILABLE',
+          service: 'donation-service',
+          donorId: req.params.donorId,
+          timestamp: new Date().toISOString()
+        });
+        
+        // Decide: Either fail gracefully with empty data or return an error
+        // Option 1: Fail gracefully (probably better for user experience)
+        return res.json({
+          success: true,
+          count: 0,
+          message: "Donation service temporarily unavailable",
+          data: []
+        });
+        
+        // Option 2: Return an error (uncomment if preferred)
+        /*
+        return res.status(503).json({
+          success: false,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'Donation service temporarily unavailable'
+          }
+        });
+        */
+      } else {
+        // Something else went wrong
+        console.error(`Error preparing donation service request: ${error.message}`);
+      }
+      
+      // Fallback to in-memory cache or basic response if everything fails
+      return res.json({
+        success: true,
+        count: 0,
+        message: "Could not retrieve donations at this time",
+        data: []
+      });
+    }
   } catch (error) {
-    console.error(error);
+    console.error(`Donor donations error: ${error.message}`);
     res.status(500).json({
       success: false,
       error: {
@@ -460,7 +516,7 @@ app.get('/:donorId/donations', [
   }
 });
 
-// Get donor events
+// Get donor events from the event service
 app.get('/:donorId/events', [
   param('donorId').isMongoId()
 ], async (req, res) => {
@@ -489,37 +545,94 @@ app.get('/:donorId/events', [
       });
     }
     
-    // In a real implementation, this would call the event service
-    // For this example, we'll return mock data
-    res.json({
-      success: true,
-      count: 1,
-      data: [
-        {
-          id: '60d4a4d51f3d2c001f9a4ede',
-          event: {
-            id: '60d4a4f01f3d2c001f9a4edf',
-            title: 'Annual Donor Appreciation Dinner',
-            eventDate: '2023-07-15T18:00:00.000Z',
-            location: 'Grand Hotel, Mumbai'
-          },
-          status: 'REGISTERED',
-          seat: {
-            section: 'A',
-            row: '3',
-            number: '12'
-          },
-          qrCode: {
-            id: '60d4a5101f3d2c001f9a4ee0',
-            url: '/api/qr-codes/60d4a5101f3d2c001f9a4ee0'
-          },
-          createdAt: '2023-06-24T14:44:21.789Z',
-          updatedAt: '2023-06-24T14:44:21.789Z'
+    // Define event service URL from environment variable or default
+    const eventServiceUrl = process.env.EVENT_SERVICE_URL || 'http://event-service:3005';
+    
+    try {
+      // Forward necessary headers for authentication
+      const headers = {
+        'Authorization': req.headers.authorization,
+        'x-user-id': req.headers['x-user-id'],
+        'x-user-role': req.headers['x-user-role'],
+        'x-request-id': req.headers['x-request-id'] || `req_${Date.now()}`
+      };
+      
+      // Build query parameters
+      const queryParams = new URLSearchParams();
+      // Add any query parameters from the original request that should be forwarded
+      if (req.query.status) queryParams.append('status', req.query.status);
+      if (req.query.upcoming) queryParams.append('upcoming', req.query.upcoming);
+      
+      // Include pagination parameters if present
+      if (req.query.page) queryParams.append('page', req.query.page);
+      if (req.query.limit) queryParams.append('limit', req.query.limit);
+      
+      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+      
+      // Call event service to get events for this donor
+      const response = await axios.get(`${eventServiceUrl}/donors/${req.params.donorId}/attendances${queryString}`, {
+        headers,
+        timeout: 5000 // 5 second timeout
+      });
+      
+      // Check if response is valid
+      if (response.data && response.data.success) {
+        return res.json(response.data);
+      } else {
+        throw new Error('Invalid response format from event service');
+      }
+    } catch (error) {
+      // Enhanced error handling with fallback
+      if (error.response) {
+        // The event service responded with an error
+        console.error(`Error from event service: ${error.response.status}`, error.response.data);
+        
+        if (error.response.status === 404) {
+          // No events found - this is not an error, just return empty array
+          return res.json({
+            success: true,
+            count: 0,
+            data: []
+          });
         }
-      ]
-    });
+        
+        // Forward the error from the event service
+        return res.status(error.response.status).json(error.response.data);
+      } else if (error.request) {
+        // No response received - service might be down
+        console.error(`Event service timeout or no response: ${error.message}`);
+        
+        // Log the incident for monitoring
+        console.error({
+          type: 'SERVICE_UNAVAILABLE',
+          service: 'event-service',
+          donorId: req.params.donorId,
+          timestamp: new Date().toISOString()
+        });
+        
+        // Decide: Either fail gracefully with empty data or return an error
+        // Option 1: Fail gracefully (better for user experience)
+        return res.json({
+          success: true,
+          count: 0,
+          message: "Event service temporarily unavailable",
+          data: []
+        });
+      } else {
+        // Something else went wrong
+        console.error(`Error preparing event service request: ${error.message}`);
+      }
+      
+      // Fallback to in-memory cache or basic response if everything fails
+      return res.json({
+        success: true,
+        count: 0,
+        message: "Could not retrieve events at this time",
+        data: []
+      });
+    }
   } catch (error) {
-    console.error(error);
+    console.error(`Donor events error: ${error.message}`);
     res.status(500).json({
       success: false,
       error: {

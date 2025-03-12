@@ -25,6 +25,13 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=guest
       - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
     networks:
       - donor-management-network
 
@@ -64,8 +71,10 @@ services:
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/auth-service?authSource=admin
       - JWT_SECRET=your_jwt_secret_key
       - JWT_REFRESH_SECRET=your_jwt_refresh_secret_key
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
     depends_on:
       - mongodb
+      - rabbitmq
     networks:
       - donor-management-network
 
@@ -77,8 +86,10 @@ services:
       - PORT=3002
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/donor-service?authSource=admin
       - JWT_SECRET=your_jwt_secret_key
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
     depends_on:
       - mongodb
+      - rabbitmq
     networks:
       - donor-management-network
 
@@ -92,9 +103,11 @@ services:
       - JWT_SECRET=your_jwt_secret_key
       - DONOR_SERVICE_URL=http://donor-service:3002
       - RECEIPT_SERVICE_URL=http://receipt-service:3004
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
       - LOG_LEVEL=info
     depends_on:
       - mongodb
+      - rabbitmq
       - donor-service
     networks:
       - donor-management-network
@@ -107,8 +120,10 @@ services:
       - PORT=3004
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/receipt-service?authSource=admin
       - JWT_SECRET=your_jwt_secret_key
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
     depends_on:
       - mongodb
+      - rabbitmq
     networks:
       - donor-management-network
 
@@ -120,8 +135,10 @@ services:
       - PORT=3005
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/event-service?authSource=admin
       - JWT_SECRET=your_jwt_secret_key
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
     depends_on:
       - mongodb
+      - rabbitmq
     networks:
       - donor-management-network
 
@@ -133,8 +150,10 @@ services:
       - PORT=3006
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/qr-service?authSource=admin
       - JWT_SECRET=your_jwt_secret_key
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
     depends_on:
       - mongodb
+      - rabbitmq
     networks:
       - donor-management-network
 
@@ -146,8 +165,10 @@ services:
       - PORT=3007
       - MONGODB_URI=mongodb://root:rootpassword@mongodb:27017/admin-service?authSource=admin
       - JWT_SECRET=your_jwt_secret_key
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
     depends_on:
       - mongodb
+      - rabbitmq
     networks:
       - donor-management-network
 
@@ -170,6 +191,7 @@ services:
 
 volumes:
   mongodb_data:
+  rabbitmq_data:
 
 networks:
   donor-management-network:
