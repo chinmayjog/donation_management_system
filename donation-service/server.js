@@ -160,6 +160,96 @@ const paginate = (req, res, next) => {
   next();
 };
 
+// Enhanced donor service client
+const DonorServiceClient = {
+  baseUrl: process.env.DONOR_SERVICE_URL || 'http://donor-service:3002',
+  timeout: 5000,
+  
+  /**
+   * Fetch donor details from the donor service
+   * @param {string} donorId - The ID of the donor to fetch
+   * @param {object} headers - Headers to forward for authentication
+   * @returns {Promise<object>} - Donor details or default donor object if fetch fails
+   */
+  async getDonor(donorId, headers) {
+    try {
+      console.log(`Fetching donor ${donorId} from donor service at ${this.baseUrl}`);
+      
+      // Forward necessary authentication headers
+      const requestHeaders = {
+        'Authorization': headers.authorization,
+        'x-user-id': headers['x-user-id'],
+        'x-user-role': headers['x-user-role'],
+        'x-request-id': headers['x-request-id'] || `req_${Date.now()}`
+      };
+      
+      const response = await axios.get(`${this.baseUrl}/${donorId}`, {
+        headers: requestHeaders,
+        timeout: this.timeout
+      });
+      
+      if (response.data && response.data.success && response.data.data) {
+        console.log(`Successfully fetched donor ${donorId}`);
+        return response.data.data;
+      }
+      
+      throw new Error('Invalid donor service response format');
+    } catch (error) {
+      // Enhanced error logging with differentiation between network and service errors
+      if (error.response) {
+        // The request was made and the server responded with a status code outside the 2xx range
+        console.error(`Donor service error for donor ${donorId}: Status ${error.response.status}`, 
+                      error.response.data);
+      } else if (error.request) {
+        // The request was made but no response was received
+        console.error(`Donor service timeout or no response for donor ${donorId}:`, error.message);
+      } else {
+        // Something happened in setting up the request
+        console.error(`Error preparing donor service request for donor ${donorId}:`, error.message);
+      }
+      
+      // Return default donor object with more comprehensive fields
+      return {
+        id: donorId,
+        firstName: 'Unknown',
+        lastName: 'Donor',
+        email: 'unknown@example.com',
+        phone: '+919999999999',
+        _defaultData: true  // Flag to indicate this is default data
+      };
+    }
+  },
+  
+  /**
+   * Batch fetch multiple donors
+   * @param {string[]} donorIds - Array of donor IDs to fetch
+   * @param {object} headers - Headers to forward for authentication
+   * @returns {Promise<object>} - Map of donor IDs to donor objects
+   */
+  async getDonors(donorIds, headers) {
+    if (!donorIds || !donorIds.length) return {};
+    
+    // Deduplicate donor IDs
+    const uniqueDonorIds = [...new Set(donorIds)];
+    
+    // Create a map to store results
+    const donorMap = {};
+    
+    // Process donor IDs in parallel with Promise.all
+    const promises = uniqueDonorIds.map(id => 
+      this.getDonor(id, headers)
+        .then(donor => {
+          donorMap[id] = donor;
+        })
+    );
+    
+    // Wait for all requests to complete
+    await Promise.all(promises);
+    
+    return donorMap;
+  }
+};
+
 // Apply JWT verification to all routes
 app.use(verifyToken);
 
@@ -224,38 +314,23 @@ app.get('/', paginate, async (req, res) => {
     // In a microservice architecture, we fetch the donor information
     // from the donor service for each donation to enrich the response
     
-    const donationsWithDonorInfo = await Promise.all(donations.map(async donation => {
+    // Get all unique donor IDs
+    const donorIds = [...new Set(donations.map(donation => donation.donorId))];
+    
+    // Batch fetch all donor information
+    const donorMap = await DonorServiceClient.getDonors(donorIds, req.headers);
+    
+    const donationsWithDonorInfo = donations.map(donation => {
       const { _id, donorId, amount, donationDate, paymentMethod, transactionReference, 
               notes, receiptStatus, receiptId, createdAt, updatedAt } = donation;
       
-      // Default donor info in case the service call fails
-      let donor = {
+      // Get donor info from the map
+      const donor = donorMap[donorId] || {
         id: donorId,
         firstName: 'Unknown',
         lastName: 'Donor',
         email: 'unknown@example.com'
       };
-      
-      try {
-        // Make a real API call to the donor service
-        const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
-        const donorResponse = await axios.get(`${donorServiceUrl}/${donorId}`, {
-          headers: {
-            // Forward user authentication and context
-            'Authorization': req.headers.authorization,
-            'x-user-id': req.headers['x-user-id'],
-            'x-user-role': req.headers['x-user-role']
-          },
-          timeout: 5000 // Set reasonable timeout
-        });
-        
-        if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
-          donor = donorResponse.data.data;
-        }
-      } catch (error) {
-        console.error(`Error fetching donor with ID ${donorId}:`, error.message);
-        // Continue with default donor info
-      }
       
       // Mock receipt data if receipt exists
       let receipt = null;
@@ -289,7 +364,7 @@ app.get('/', paginate, async (req, res) => {
         createdAt,
         updatedAt
       };
-    }));
+    });
     
     // Calculate pagination details
     const totalPages = Math.ceil(total / limit);
@@ -351,34 +426,7 @@ app.get('/:donationId', [
     }
     
     // Fetch donor data from donor service
-    let donor = {
-      id: donation.donorId,
-      firstName: 'Unknown',
-      lastName: 'Donor',
-      email: 'unknown@example.com',
-      phone: '+919999999999'
-    };
-    
-    try {
-      // Make a real API call to the donor service
-      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
-      const donorResponse = await axios.get(`${donorServiceUrl}/${donation.donorId}`, {
-        headers: {
-          // Forward user authentication and context
-          'Authorization': req.headers.authorization,
-          'x-user-id': req.headers['x-user-id'],
-          'x-user-role': req.headers['x-user-role']
-        },
-        timeout: 5000 // Set reasonable timeout
-      });
-      
-      if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
-        donor = donorResponse.data.data;
-      }
-    } catch (error) {
-      console.error(`Error fetching donor with ID ${donation.donorId}:`, error.message);
-      // Continue with default donor info
-    }
+    const donor = await DonorServiceClient.getDonor(donation.donorId, req.headers);
     
     // Simulated recorded-by user data
     const recordedBy = {
@@ -451,17 +499,10 @@ app.post('/', [
   try {
     // Verify that the donor exists by making a request to the donor service
     try {
-      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
-      const donorResponse = await axios.get(`${donorServiceUrl}/${req.body.donorId}`, {
-        headers: {
-          'Authorization': req.headers.authorization,
-          'x-user-id': req.headers['x-user-id'],
-          'x-user-role': req.headers['x-user-role']
-        },
-        timeout: 5000
-      });
+      const donor = await DonorServiceClient.getDonor(req.body.donorId, req.headers);
       
-      if (!donorResponse.data || !donorResponse.data.success) {
+      // If we received default data, it means the donor wasn't found
+      if (donor._defaultData) {
         return res.status(404).json({
           success: false,
           error: {
@@ -471,20 +512,14 @@ app.post('/', [
         });
       }
     } catch (error) {
-      // If the error is a 404, it means the donor doesn't exist
-      if (error.response && error.response.status === 404) {
-        return res.status(404).json({
-          success: false,
-          error: {
-            code: 'RESOURCE_NOT_FOUND',
-            message: 'Donor not found'
-          }
-        });
-      }
-      
-      // For other errors (like service unavailable), we'll log but continue
-      console.error(`Error verifying donor existence: ${error.message}`);
-      // We'll still create the donation in this case, assuming the donorId is valid
+      // For errors we couldn't handle in the client
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to verify donor existence'
+        }
+      });
     }
     
     // Get user ID from JWT (which is already verified)
@@ -535,36 +570,7 @@ app.post('/', [
     console.log(`Donation created. Receipt generation should be triggered for donation ${donation._id}`);
     
     // Fetch donor data from donor service
-    let donor = {
-      id: req.body.donorId,
-      firstName: 'Unknown',
-      lastName: 'Donor'
-    };
-    
-    try {
-      // Make a real API call to the donor service to verify donor exists
-      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
-      const donorResponse = await axios.get(`${donorServiceUrl}/${req.body.donorId}`, {
-        headers: {
-          // Forward user authentication and context
-          'Authorization': req.headers.authorization,
-          'x-user-id': req.headers['x-user-id'],
-          'x-user-role': req.headers['x-user-role']
-        },
-        timeout: 5000 // Set reasonable timeout
-      });
-      
-      if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
-        donor = {
-          id: donorResponse.data.data._id || donorResponse.data.data.id,
-          firstName: donorResponse.data.data.firstName,
-          lastName: donorResponse.data.data.lastName
-        };
-      }
-    } catch (error) {
-      console.error(`Error verifying donor with ID ${req.body.donorId}:`, error.message);
-      // We'll still create the donation, but log the warning
-    }
+    const donor = await DonorServiceClient.getDonor(req.body.donorId, req.headers);
     
     const response = {
       success: true,
@@ -655,36 +661,7 @@ app.put('/:donationId', [
     // This would involve publishing an event or making a request to the receipt service
     
     // Fetch donor data from donor service
-    let donor = {
-      id: donation.donorId,
-      firstName: 'Unknown',
-      lastName: 'Donor'
-    };
-    
-    try {
-      // Make a real API call to the donor service
-      const donorServiceUrl = process.env.DONOR_SERVICE_URL || 'http://donor-service:3002';
-      const donorResponse = await axios.get(`${donorServiceUrl}/${donation.donorId}`, {
-        headers: {
-          // Forward user authentication and context
-          'Authorization': req.headers.authorization,
-          'x-user-id': req.headers['x-user-id'],
-          'x-user-role': req.headers['x-user-role']
-        },
-        timeout: 5000 // Set reasonable timeout
-      });
-      
-      if (donorResponse.data && donorResponse.data.success && donorResponse.data.data) {
-        donor = {
-          id: donorResponse.data.data._id || donorResponse.data.data.id,
-          firstName: donorResponse.data.data.firstName,
-          lastName: donorResponse.data.data.lastName
-        };
-      }
-    } catch (error) {
-      console.error(`Error fetching donor with ID ${donation.donorId}:`, error.message);
-      // Continue with default donor info
-    }
+    const donor = await DonorServiceClient.getDonor(donation.donorId, req.headers);
     
     const response = {
       success: true,
@@ -983,6 +960,21 @@ app.delete('/:donationId', authorizeRoles(['admin', 'superadmin']), [
       }
     });
   }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    service: 'donation-service',
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+    connections: {
+      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      donorService: 'available' // This would be dynamically determined in a real implementation
+    }
+  });
 });
 
 app.listen(PORT, () => {
