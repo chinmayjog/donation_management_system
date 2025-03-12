@@ -4,8 +4,100 @@ const { body, param, query, validationResult } = require('express-validator');
 const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3002;
+const amqp = require('amqplib');
 
 app.use(express.json());
+
+// RabbitMQ connection and channel
+let rabbitChannel;
+let rabbitConnection;
+
+// Initialize RabbitMQ connection
+async function connectToRabbitMQ() {
+  try {
+    // Get RabbitMQ URL from environment variables or use default
+    const rabbitmqUrl = process.env.RABBITMQ_URL || 'amqp://guest:guest@rabbitmq:5672';
+    
+    console.log(`Connecting to RabbitMQ at ${rabbitmqUrl}...`);
+    rabbitConnection = await amqp.connect(rabbitmqUrl);
+    
+    // Handle connection close and errors
+    rabbitConnection.on('close', () => {
+      console.log('RabbitMQ connection closed, attempting to reconnect...');
+      setTimeout(connectToRabbitMQ, 5000); // Try to reconnect after 5 seconds
+    });
+    
+    rabbitConnection.on('error', (err) => {
+      console.error('RabbitMQ connection error:', err);
+      // Connection errors will trigger the 'close' event
+    });
+    
+    // Create channel
+    rabbitChannel = await rabbitConnection.createChannel();
+    
+    // Define exchanges and queues
+    await rabbitChannel.assertExchange('donor-events', 'topic', { durable: true });
+    
+    // Define common queues that services might use
+    await rabbitChannel.assertQueue('donor-created', { durable: true });
+    await rabbitChannel.assertQueue('donor-updated', { durable: true });
+    await rabbitChannel.assertQueue('donor-verified', { durable: true });
+    
+    // Bind queues to exchange with routing keys
+    await rabbitChannel.bindQueue('donor-created', 'donor-events', 'donor.created');
+    await rabbitChannel.bindQueue('donor-updated', 'donor-events', 'donor.updated');
+    await rabbitChannel.bindQueue('donor-verified', 'donor-events', 'donor.verified');
+    
+    console.log('Connected to RabbitMQ and configured exchanges/queues');
+  } catch (error) {
+    console.error('Error connecting to RabbitMQ:', error);
+    setTimeout(connectToRabbitMQ, 5000); // Try to reconnect after 5 seconds
+  }
+}
+
+// Helper function to publish event to RabbitMQ
+async function publishEvent(routingKey, data) {
+  try {
+    if (!rabbitChannel) {
+      console.warn('RabbitMQ channel not available, event not published');
+      return false;
+    }
+    
+    // Add timestamp and metadata
+    const event = {
+      ...data,
+      metadata: {
+        timestamp: new Date().toISOString(),
+        service: 'donor-service',
+        eventType: routingKey
+      }
+    };
+    
+    // Publish to the exchange with the specified routing key
+    const published = rabbitChannel.publish(
+      'donor-events',
+      routingKey,
+      Buffer.from(JSON.stringify(event)),
+      { 
+        persistent: true,
+        contentType: 'application/json'
+      }
+    );
+    
+    if (published) {
+      console.log(`Event published: ${routingKey}`);
+    } else {
+      console.warn(`Event could not be published immediately: ${routingKey}`);
+      // Channel buffer is full, consider implementing a retry mechanism here
+    }
+    
+    return published;
+  } catch (error) {
+    console.error(`Error publishing event to RabbitMQ (${routingKey}):`, error);
+    return false;
+  }
+}
+
 
 // MongoDB connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/donor-service', {
@@ -232,9 +324,21 @@ app.post('/', [
     });
     
     await donor.save();
-    
-    // Publish event to message broker (in a real implementation)
-    // For now, just log
+        
+    // Publish event to message broker
+    const eventData = {
+      id: donor._id,
+      firstName: donor.firstName,
+      lastName: donor.lastName,
+      email: donor.email,
+      city: donor.city,
+      state: donor.state,
+      preferredCommunication: donor.preferredCommunication,
+      createdBy: userId,
+      createdAt: donor.createdAt
+    };
+
+    await publishEvent('donor.created', eventData);
     console.log('Donor created:', donor._id);
     
     res.status(201).json({
@@ -304,7 +408,27 @@ app.put('/:donorId', [
     
     donor.updatedAt = new Date();
     await donor.save();
-    
+
+    // Publish event to message broker
+    const updateEventData = {
+      id: donor._id,
+      changes: {}, // Populate with changed fields only
+      updatedBy: req.headers['x-user-id'] || 'system',
+      updatedAt: donor.updatedAt
+    };
+        // Add changed fields to the event data
+    if (req.body.firstName !== undefined) updateEventData.changes.firstName = req.body.firstName;
+    if (req.body.lastName !== undefined) updateEventData.changes.lastName = req.body.lastName;
+    if (req.body.email !== undefined) updateEventData.changes.email = req.body.email;
+    if (req.body.phone !== undefined) updateEventData.changes.phone = req.body.phone;
+    if (req.body.address !== undefined) updateEventData.changes.address = req.body.address;
+    if (req.body.city !== undefined) updateEventData.changes.city = req.body.city;
+    if (req.body.state !== undefined) updateEventData.changes.state = req.body.state;
+    if (req.body.postalCode !== undefined) updateEventData.changes.postalCode = req.body.postalCode;
+    if (req.body.preferredCommunication !== undefined) updateEventData.changes.preferredCommunication = req.body.preferredCommunication;
+
+    await publishEvent('donor.updated', updateEventData);
+
     res.json({
       success: true,
       data: donor
@@ -641,6 +765,31 @@ app.get('/:donorId/events', [
       }
     });
   }
+});
+
+// Initialize RabbitMQ connection when server starts
+connectToRabbitMQ();
+
+process.on('SIGINT', async () => {
+  console.log('Gracefully shutting down...');
+  try {
+    if (rabbitChannel) await rabbitChannel.close();
+    if (rabbitConnection) await rabbitConnection.close();
+  } catch (error) {
+    console.error('Error during graceful shutdown:', error);
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('Gracefully shutting down...');
+  try {
+    if (rabbitChannel) await rabbitChannel.close();
+    if (rabbitConnection) await rabbitConnection.close();
+  } catch (error) {
+    console.error('Error during graceful shutdown:', error);
+  }
+  process.exit(0);
 });
 
 app.listen(PORT, () => {
