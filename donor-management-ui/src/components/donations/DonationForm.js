@@ -141,7 +141,7 @@ const DonationForm = () => {
                 >
                   <option value="">Select Donor</option>
                   {donors.map(donor => (
-                    <option key={donor.id} value={donor.id}>
+                    <option key={donor.id} value={donor._id}>
                       {donor.firstName} {donor.lastName} ({donor.email})
                     </option>
                   ))}
