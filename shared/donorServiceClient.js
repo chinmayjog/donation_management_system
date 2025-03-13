@@ -426,4 +426,4 @@ const DonorServiceClient = {
  const donorServiceClient = new DonorServiceClient();
   
  // Export the instance
- module.exports = donorServiceClient;
+ export default donorServiceClient;

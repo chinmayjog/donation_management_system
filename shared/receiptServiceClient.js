@@ -367,7 +367,7 @@ class ReceiptServiceClient {
   const receiptServiceClient = new ReceiptServiceClient();
   
   // Export the instance
-  module.exports = receiptServiceClient;
+  export default receiptServiceClient;
   
   
       

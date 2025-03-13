@@ -4,7 +4,7 @@ const { body, param, query, validationResult } = require('express-validator');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const receiptServiceClient = require('./shared/receiptServiceClient');
-const donorServiceClient = require('../shared/donorServiceClient');
+const donorServiceClient = require('../shared/donorServiceClient').default;
 const app = express();
 const PORT = process.env.PORT || 3003;
 
